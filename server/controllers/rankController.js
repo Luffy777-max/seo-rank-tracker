@@ -1,10 +1,9 @@
-
-import KeywordTracking from "../models/KeywordTracking.js";
+import KeywordTracking from "../models/keywordTracking.js";
 import { keywordTracking } from "../services/keywordTrackingService.js";
 
-// Get authenticated user ID
+// Get authenticated user ID (supports both req.userId and req.userID)
 const getAuthenticatedUserId = (req) => {
-    return req.userID;
+    return req.userId || req.userID;
 };
 
 // Add a keyword to track
@@ -72,14 +71,14 @@ export const addKeyword = async (req, res) => {
             status: "checking"
         });
 
-        // Respond before starting the ranking check.
+        // Respond before starting the ranking check
         res.status(201).json({
             success: true,
             message: "Keyword tracking added successfully",
             tracking
         });
 
-        // Run ranking check in the background.
+        // Run ranking check in the background
         Promise.resolve()
             .then(() => keywordTracking(tracking))
             .catch((error) => {

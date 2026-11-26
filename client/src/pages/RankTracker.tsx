@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Target, Plus, RefreshCw, Trash2, TrendingUp, TrendingDown, Minus, ExternalLink, Clock, Loader2, X, Search, Globe, AlertCircle, Eye, EyeOff, Filter, ArrowUpDown } from "lucide-react";
 import { useApp } from "../context/AppContext";
+
 interface KeywordItem {
     _id: string;
     keyword: string;
@@ -19,8 +20,7 @@ interface KeywordItem {
 }
 
 export default function RankTracker() {
-
-    const {api} = useApp();
+    const { api } = useApp();
     const [keywords, setKeywords] = useState<KeywordItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [showAddModal, setShowAddModal] = useState(false);
@@ -35,9 +35,9 @@ export default function RankTracker() {
     const [sortBy, setSortBy] = useState("newest");
 
     const fetchKeywords = async () => {
-        try{
-            const res = await api.get('/api/rank/list');
-            if(res.data.success){
+        try {
+            const res = await api.get("/api/rank/list");
+            if (res.data.success) {
                 setKeywords(res.data.keywords);
             }
         } catch (error) {
@@ -46,33 +46,36 @@ export default function RankTracker() {
         setLoading(false);
     };
 
-    const handleAdd = async (e: React.SubmitEvent) => {
+    const handleAdd = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        if(!newKeyword.trim() || !newUrl.trim()) return;
+        if (!newKeyword.trim() || !newUrl.trim()) return;
         setAdding(true);
         setAddError("");
-        try{
-            const res = await api.post('/api/rank/add', {
+        try {
+            const res = await api.post("/api/rank/add", {
                 keyword: newKeyword.trim(),
-                url: newUrl.trim()
-            })
-            if(res.data.success){
-                setKeywords((prev)=>[res.data.tracking, ...prev]);
+                url: newUrl.trim(),
+            });
+            if (res.data.success) {
+                setKeywords((prev) => [res.data.tracking, ...prev]);
                 setNewKeyword("");
                 setNewUrl("");
                 setShowAddModal(false);
 
-                //Poll for completion
+                // Poll for completion
                 const id = res.data.tracking._id;
                 const pollInterval = setInterval(async () => {
-                    try{
+                    try {
                         const check = await api.get(`/api/rank/${id}`);
-                        if(check.data.tracking.status !== 'checking'){
-                            setKeywords((prev) => prev.map((k) => (k._id === id ? check.data.tracking : k)));
+                        if (check.data.tracking.status !== "checking") {
+                            clearInterval(pollInterval);
+                            setKeywords((prev) =>
+                                prev.map((k) => (k._id === id ? check.data.tracking : k))
+                            );
                         }
-                    } catch(error) {
+                    } catch (error) {
                         console.error("Polling error:", error);
-
+                        clearInterval(pollInterval);
                     }
                 }, 3000);
             }
@@ -84,21 +87,59 @@ export default function RankTracker() {
 
     const handleRefresh = async (id: string) => {
         setRefreshing(id);
-        setTimeout(() => {
+        try {
+            await api.post(`/api/rank/${id}/refresh`);
+            setKeywords((prev) =>
+                prev.map((k) => (k._id === id ? { ...k, status: "checking" } : k))
+            );
+
+            const pollInterval = setInterval(async () => {
+                try {
+                    const check = await api.get(`/api/rank/${id}`);
+                    if (check.data.tracking.status !== "checking") {
+                        clearInterval(pollInterval);
+                        setKeywords((prev) =>
+                            prev.map((k) => (k._id === id ? check.data.tracking : k))
+                        );
+                        setRefreshing(null);
+                    }
+                } catch (error) {
+                    console.error("Polling error:", error);
+                    clearInterval(pollInterval);
+                    setRefreshing(null);
+                }
+            }, 3000);
+        } catch (error) {
+            console.error("Refresh error:", error);
             setRefreshing(null);
-        }, 1000);
+        }
     };
 
     const handleDelete = async (id: string) => {
         if (!confirm("Delete this keyword tracking?")) return;
         setDeleting(id);
-        setTimeout(() => {
-            setDeleting(null);
-        }, 1000);
+        try {
+            await api.delete(`/api/rank/${id}`);
+            setKeywords((prev) => prev.filter((k) => k._id !== id));
+        } catch (error) {
+            console.error("Delete error:", error);
+        }
+        setDeleting(null);
     };
 
     const handleToggle = async (id: string) => {
-        console.log(id);
+        try {
+            const res = await api.put(`/api/rank/${id}/toggle`);
+            if (res.data.success) {
+                setKeywords((prev) =>
+                    prev.map((k) =>
+                        k._id === id ? { ...k, active: res.data.tracking.active } : k
+                    )
+                );
+            }
+        } catch (error) {
+            console.error("Toggle failed:", error);
+        }
     };
 
     const getPositionBadge = (pos: number | null) => {
@@ -118,7 +159,11 @@ export default function RankTracker() {
     let processedData = [...keywords];
 
     if (searchQuery) {
-        processedData = processedData.filter((k) => k.keyword.toLowerCase().includes(searchQuery.toLowerCase()) || k.domain.toLowerCase().includes(searchQuery.toLowerCase()));
+        processedData = processedData.filter(
+            (k) =>
+                k.keyword.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                k.domain.toLowerCase().includes(searchQuery.toLowerCase())
+        );
     }
 
     if (statusFilter !== "all") {
@@ -147,7 +192,7 @@ export default function RankTracker() {
     }, []);
 
     return (
-        <div className="min-h-scree pt-16 md:pt-24 bg-background">
+        <div className="min-h-screen pt-16 md:pt-24 bg-background">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
                 {/* Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
