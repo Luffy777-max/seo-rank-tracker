@@ -1,19 +1,14 @@
-
 import { chromium } from "playwright-core";
 import Browserbase from "@browserbasehq/sdk";
 
-// Initialize Browserbase only when rank tracking is requested.
 function getBrowserbase() {
   const apiKey = process.env.BROWSERBASE_API_KEY;
-
   if (!apiKey) {
     throw new Error("BROWSERBASE_API_KEY is missing in server .env");
   }
-
   return new Browserbase({ apiKey });
 }
 
-// Normalize domain names.
 function normalizeDomain(domain) {
   return domain
     .trim()
@@ -24,7 +19,6 @@ function normalizeDomain(domain) {
     .toLowerCase();
 }
 
-// Check exact domain or subdomain match.
 function isMatchingDomain(resultDomain, targetDomain) {
   return (
     resultDomain === targetDomain ||
@@ -32,7 +26,6 @@ function isMatchingDomain(resultDomain, targetDomain) {
   );
 }
 
-// Search Google and return target domain ranking.
 export async function rankTracker(keyword, targetDomain) {
   let browser;
 
@@ -42,7 +35,6 @@ export async function rankTracker(keyword, targetDomain) {
     }
 
     const bb = getBrowserbase();
-
     const cleanTarget = normalizeDomain(targetDomain);
 
     const session = await bb.sessions.create({
@@ -52,125 +44,195 @@ export async function rankTracker(keyword, targetDomain) {
     });
 
     browser = await chromium.connectOverCDP(session.connectUrl);
-
     const context = browser.contexts()[0];
-
     if (!context) {
       throw new Error("Browser context not available");
     }
 
-    const page = context.pages()[0] || await context.newPage();
-
+    const page = context.pages()[0] || (await context.newPage());
     page.setDefaultNavigationTimeout(45000);
 
-    await page.goto("https://www.google.com", {
+    await page.goto("https://www.google.com/?hl=en&gl=us", {
       waitUntil: "domcontentloaded",
     });
 
-    // Handle Google consent if available.
+    // Dismiss consent banner if shown
     try {
-      const consentButton = page.locator(
-        'button[id="L2AGLb"], form[action*="consent"] button'
-      ).first();
-
+      const consentButton = page
+        .locator('button[id="L2AGLb"], form[action*="consent"] button')
+        .first();
       if (await consentButton.count()) {
         await consentButton.click({ timeout: 3000 });
         await page.waitForTimeout(1000);
       }
     } catch {
-      // Consent button is optional.
+      // Optional consent banner
     }
+
+    // Type keyword into Google's search box
+    const searchBox = page
+      .locator('textarea[name="q"], input[name="q"]')
+      .first();
+    await searchBox.waitFor({ timeout: 10000 });
+    await searchBox.fill(keyword);
+    await searchBox.press("Enter");
 
     const allResults = [];
     let found = null;
 
     for (let gPage = 1; gPage <= 5 && !found; gPage++) {
-      const searchUrl =
-        `https://www.google.com/search?q=${encodeURIComponent(keyword)}` +
-        `&start=${(gPage - 1) * 10}&num=10&hl=en&gl=us`;
+      if (gPage > 1) {
+        const nextBtn = page.locator("a#pnnext").first();
+        if (!(await nextBtn.count())) break;
+        await nextBtn.click();
+      }
 
-      await page.goto(searchUrl, {
-        waitUntil: "domcontentloaded",
-      });
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(3000);
 
-      let pageResults = [];
+      const pageResults = await page.evaluate(() => {
+        const isGoogleInternalHost = (host) => {
+          const h = host.toLowerCase();
+          return (
+            h === "google.com" ||
+            h.endsWith(".google.com") ||
+            h.includes("gstatic.com") ||
+            h.includes("googleapis.com") ||
+            h.includes("googleusercontent.com")
+          );
+        };
 
-      for (let retry = 0; retry < 3; retry++) {
-        try {
-          await page.waitForSelector("h3", {
-            timeout: 10000,
-          });
+        const extractUrlFromCard = (anchor, card) => {
+          const rawHref = anchor?.getAttribute("href") || "";
 
-          await page.waitForTimeout(1000);
-
-          pageResults = await page.evaluate(() => {
-            return Array.from(document.querySelectorAll("h3"))
-              .map((h3) => {
-                const anchor = h3.closest("a");
-
-                if (!anchor || !anchor.href.startsWith("http")) {
-                  return null;
-                }
-
-                const url = new URL(anchor.href);
-
-                if (
-                  url.hostname.includes("google.") ||
-                  url.hostname.includes("youtube.com")
-                ) {
-                  return null;
-                }
-
-                const container =
-                  anchor.closest("div.MjjYud") ||
-                  anchor.parentElement;
-
-                return {
-                  url: anchor.href,
-                  domain: url.hostname
-                    .replace(/^www\./i, "")
-                    .toLowerCase(),
-                  title: h3.innerText.trim(),
-                  snippet: (
-                    container?.innerText || ""
-                  ).trim().substring(0, 300),
-                };
-              })
-              .filter(Boolean);
-          });
-
-          if (pageResults.length > 0) break;
-
-        } catch (error) {
-          if (retry === 2) {
-            console.error("Google result extraction failed:", error.message);
-            break;
+          // 1. Direct or /url?q= link
+          try {
+            const parsed = new URL(rawHref, "https://www.google.com");
+            if (
+              parsed.hostname.includes("google.") &&
+              parsed.pathname === "/url"
+            ) {
+              const target =
+                parsed.searchParams.get("q") ||
+                parsed.searchParams.get("url") ||
+                "";
+              if (target.startsWith("http")) return target;
+            } else if (
+              parsed.protocol.startsWith("http") &&
+              !isGoogleInternalHost(parsed.hostname)
+            ) {
+              return parsed.href;
+            }
+          } catch {
+            // Fall through to <cite> extraction
           }
 
-          await page.reload({
-            waitUntil: "domcontentloaded",
+          // 2. Fallback for /goto?url=... redirect links: read the visible <cite> URL in the card
+          const citeEl = card?.querySelector("cite");
+          const citeText = (citeEl?.textContent || "").trim();
+          if (citeText) {
+            const basePart = citeText.split(/[›\s]/)[0].trim();
+            if (basePart && basePart.includes(".")) {
+              const candidateUrl = /^https?:\/\//i.test(basePart)
+                ? basePart
+                : `https://${basePart}`;
+              try {
+                const u = new URL(candidateUrl);
+                if (!isGoogleInternalHost(u.hostname)) {
+                  return u.href;
+                }
+              } catch {
+                // Invalid cite URL
+              }
+            }
+          }
+
+          return "";
+        };
+
+        const seenDomainsAndTitles = new Set();
+        const results = [];
+        const root =
+          document.querySelector("#rso") ||
+          document.querySelector("#search") ||
+          document.body;
+
+        const headings = Array.from(root.querySelectorAll("h3"));
+
+        for (const h3 of headings) {
+          // Skip hidden headings or headings inside AI Overview
+          if (h3.offsetParent === null) continue;
+          if (h3.closest('[data-attrid="SGE"], [jsname="N760b"]')) continue;
+
+          const title = (h3.textContent || "").trim();
+          if (!title || title.length < 2) continue;
+
+          const card =
+            h3.closest("div.MjjYud") ||
+            h3.closest("div.g") ||
+            h3.closest("[data-hveid]") ||
+            h3.parentElement?.parentElement?.parentElement;
+
+          const anchor =
+            h3.closest("a[href]") ||
+            card?.querySelector('a[href^="/goto"], a[href^="/url"], a[href^="http"]');
+
+          const resolvedUrl = extractUrlFromCard(anchor, card);
+          if (!resolvedUrl) continue;
+
+          let parsedUrl;
+          try {
+            parsedUrl = new URL(resolvedUrl);
+          } catch {
+            continue;
+          }
+
+          const domain = parsedUrl.hostname
+            .replace(/^www\./i, "")
+            .toLowerCase();
+          if (!domain || isGoogleInternalHost(domain)) continue;
+
+          const dedupeKey = `${domain}::${title}`;
+          if (seenDomainsAndTitles.has(dedupeKey)) continue;
+          seenDomainsAndTitles.add(dedupeKey);
+
+          const rawText = (card?.innerText || "").trim();
+          const snippet =
+            rawText
+              .split("\n")
+              .find(
+                (line) =>
+                  line.trim().length > 35 &&
+                  !line.includes(title.substring(0, 20)) &&
+                  !line.includes("›")
+              )
+              ?.trim()
+              .substring(0, 300) || "";
+
+          results.push({
+            url: resolvedUrl,
+            domain,
+            title,
+            snippet,
           });
         }
-      }
+
+        return results;
+      });
+
+      console.log(
+        `Keyword "${keyword}" | Page ${gPage}: extracted ${pageResults.length} results`
+      );
 
       if (!pageResults.length) break;
 
       for (const result of pageResults) {
         const position = allResults.length + 1;
-
-        const resultData = {
-          ...result,
-          position,
-        };
-
+        const resultData = { ...result, position };
         allResults.push(resultData);
 
         if (isMatchingDomain(result.domain, cleanTarget)) {
-          found = {
-            ...resultData,
-            page: gPage,
-          };
-
+          found = { ...resultData, page: gPage };
           break;
         }
       }
@@ -181,9 +243,7 @@ export async function rankTracker(keyword, targetDomain) {
     }
 
     const competitors = allResults
-      .filter(
-        (result) => !isMatchingDomain(result.domain, cleanTarget)
-      )
+      .filter((result) => !isMatchingDomain(result.domain, cleanTarget))
       .slice(0, 10);
 
     return {
@@ -193,21 +253,18 @@ export async function rankTracker(keyword, targetDomain) {
         targetDomain,
         position: found?.position ?? null,
         page: found?.page ?? null,
-        title: found?.title ?? null,
-        snippet: found?.snippet ?? null,
+        title: found?.title ?? "",
+        snippet: found?.snippet ?? "",
         competitors,
         totalResultsScanned: allResults.length,
       },
     };
-
   } catch (error) {
     console.error("Error in rankTracker:", error);
-
     return {
       success: false,
       error: error.message || "An error occurred while tracking rank",
     };
-
   } finally {
     if (browser) {
       await browser.close().catch((error) => {
