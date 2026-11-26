@@ -1,9 +1,24 @@
-import { useState, useEffect } from "react";
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import ScoreGauge from "../components/ScoreGauge";
 import IssueCard from "../components/IssueCard";
 import { ArrowLeft, Globe, Clock, FileText, Image, Link2, Heading, Tag, AlertCircle, ExternalLink, Type, Search } from "lucide-react";
-import { dummyWebsiteAnalysis } from "../assets/assets";
+import { useApp } from "../context/AppContext";
+
+interface MetaTags {
+    title: string;
+    description: string;
+    canonical: string;
+    robots: string;
+    ogTitle: string;
+    ogDescription: string;
+    ogImage: string;
+    twitterCard: string;
+    viewport: string;
+    charset: string;
+}
 
 interface AnalysisData {
     _id: string;
@@ -20,18 +35,8 @@ interface AnalysisData {
         accessibility: number;
         bestPractices: number;
     };
-    metaData: {
-        title: string;
-        description: string;
-        canonical: string;
-        robots: string;
-        ogTitle: string;
-        ogDescription: string;
-        ogImage: string;
-        twitterCard: string;
-        viewport: string;
-        charset: string;
-    };
+    metadata?: MetaTags;
+    metaData?: MetaTags;
     headings: {
         h1: number;
         h2: number;
@@ -55,18 +60,48 @@ interface AnalysisData {
     issues: { severity: string; category: string; message: string; recommendation: string }[];
 }
 
+const emptyMeta: MetaTags = {
+    title: "",
+    description: "",
+    canonical: "",
+    robots: "",
+    ogTitle: "",
+    ogDescription: "",
+    ogImage: "",
+    twitterCard: "",
+    viewport: "",
+    charset: "",
+};
+
 export default function Report() {
     const { id } = useParams();
+    const { api } = useApp();
     const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error] = useState("");
+    const [error, setError] = useState("");
     const [activeTab, setActiveTab] = useState("overview");
+    const pollTimeoutRef = useRef<any>(null);
 
     const fetchAnalysis = async () => {
-        setTimeout(() => {
-            setAnalysis(dummyWebsiteAnalysis);
+        try {
+            const res = await api.get(`/api/analysis/${id}`);
+            if (res.data.success && res.data.analysis) {
+                const report: AnalysisData = res.data.analysis;
+                setAnalysis(report);
+
+                if (report.status === "processing" || report.status === "pending") {
+                    pollTimeoutRef.current = setTimeout(fetchAnalysis, 2500);
+                } else {
+                    setLoading(false);
+                }
+            } else {
+                setError(res.data.message || "Report not found.");
+                setLoading(false);
+            }
+        } catch (err: any) {
+            setError(err.response?.data?.message || "Failed to load report.");
             setLoading(false);
-        }, 1500);
+        }
     };
 
     const getScoreClass = (s: number) => {
@@ -89,7 +124,12 @@ export default function Report() {
     ];
 
     useEffect(() => {
-        (async () => await fetchAnalysis())();
+        if (id) {
+            fetchAnalysis();
+        }
+        return () => {
+            if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+        };
     }, [id]);
 
     if (loading) {
@@ -124,7 +164,7 @@ export default function Report() {
                 <div className="text-center bg-card border border-border rounded-2xl p-10">
                     <AlertCircle size={48} className="mx-auto text-danger mb-4" />
                     <h2 className="text-xl font-bold text-foreground mb-2">Analysis Failed</h2>
-                    <p className="text-muted-foreground text-sm mb-6">The AI model might be down. Please try again later.</p>
+                    <p className="text-muted-foreground text-sm mb-6">The AI model or website scan encountered an error. Please try again later.</p>
                     <Link to="/analyze" className="bg-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-primary-foreground inline-block" style={{ color: "var(--background)" }}>
                         Try Again
                     </Link>
@@ -133,9 +173,21 @@ export default function Report() {
         );
     }
 
-    const criticalCount = analysis.issues.filter((i) => i.severity === "critical").length;
-    const warningCount = analysis.issues.filter((i) => i.severity === "warning").length;
-    const infoCount = analysis.issues.filter((i) => i.severity === "info").length;
+    const metaInfo: MetaTags = {
+        ...emptyMeta,
+        ...(analysis.metaData || analysis.metadata || {}),
+    };
+
+    const issues = analysis.issues || [];
+    const keywords = analysis.keywords || [];
+    const headings = analysis.headings || { h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0, h1Texts: [] };
+    const links = analysis.links || { internal: 0, external: 0, total: 0 };
+    const images = analysis.images || { total: 0, missingAlt: 0, withAlt: 0 };
+    const categories = analysis.categories || { seo: 0, performance: 0, accessibility: 0, bestPractices: 0 };
+
+    const criticalCount = issues.filter((i) => i.severity === "critical").length;
+    const warningCount = issues.filter((i) => i.severity === "warning").length;
+    const infoCount = issues.filter((i) => i.severity === "info").length;
 
     return (
         <div className="min-h-screen pt-16 md:pt-24 bg-background">
@@ -172,10 +224,10 @@ export default function Report() {
                         <div className="flex-1 w-full">
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                                 {[
-                                    { label: "SEO", value: analysis.categories.seo, icon: <Search size={18} /> },
-                                    { label: "Performance", value: analysis.categories.performance, icon: <Clock size={18} /> },
-                                    { label: "Accessibility", value: analysis.categories.accessibility, icon: <Globe size={18} /> },
-                                    { label: "Best Practices", value: analysis.categories.bestPractices, icon: <Tag size={18} /> },
+                                    { label: "SEO", value: categories.seo, icon: <Search size={18} /> },
+                                    { label: "Performance", value: categories.performance, icon: <Clock size={18} /> },
+                                    { label: "Accessibility", value: categories.accessibility, icon: <Globe size={18} /> },
+                                    { label: "Best Practices", value: categories.bestPractices, icon: <Tag size={18} /> },
                                 ].map((cat) => (
                                     <div key={cat.label} className={`rounded-xl p-4 border text-center ${getScoreBgClass(cat.value)}`}>
                                         <div className="flex items-center justify-center gap-1.5 mb-2 text-muted-foreground/80">
@@ -216,7 +268,7 @@ export default function Report() {
                             style={activeTab === tab.id ? { color: "var(--background)" } : {}}
                         >
                             {tab.label}
-                            {tab.id === "issues" && analysis.issues.length > 0 && <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] bg-danger/20 text-danger">{analysis.issues.length}</span>}
+                            {tab.id === "issues" && issues.length > 0 && <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] bg-danger/20 text-danger">{issues.length}</span>}
                         </button>
                     ))}
                 </div>
@@ -246,14 +298,14 @@ export default function Report() {
                                     </div>
                                 </div>
 
-                                {analysis.issues.length > 0 && (
+                                {issues.length > 0 && (
                                     <div className="mt-4 space-y-2">
-                                        {analysis.issues.slice(0, 3).map((issue, i) => (
+                                        {issues.slice(0, 3).map((issue, i) => (
                                             <IssueCard key={i} issue={issue} />
                                         ))}
-                                        {analysis.issues.length > 3 && (
+                                        {issues.length > 3 && (
                                             <button onClick={() => setActiveTab("issues")} className="w-full text-center text-sm text-primary hover:underline py-2">
-                                                View all {analysis.issues.length} issues →
+                                                View all {issues.length} issues →
                                             </button>
                                         )}
                                     </div>
@@ -269,15 +321,15 @@ export default function Report() {
                                     </h3>
                                     <div className="grid grid-cols-3 gap-3">
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className="text-2xl font-bold text-primary">{analysis.links.internal}</p>
+                                            <p className="text-2xl font-bold text-primary">{links.internal}</p>
                                             <p className="text-xs text-gray-500">Internal</p>
                                         </div>
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className="text-2xl font-bold text-secondary">{analysis.links.external}</p>
+                                            <p className="text-2xl font-bold text-secondary">{links.external}</p>
                                             <p className="text-xs text-gray-500">External</p>
                                         </div>
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className="text-2xl font-bold text-accent">{analysis.links.total}</p>
+                                            <p className="text-2xl font-bold text-accent">{links.total}</p>
                                             <p className="text-xs text-gray-500">Total</p>
                                         </div>
                                     </div>
@@ -290,15 +342,15 @@ export default function Report() {
                                     </h3>
                                     <div className="grid grid-cols-3 gap-3">
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className="text-2xl font-bold">{analysis.images.total}</p>
+                                            <p className="text-2xl font-bold">{images.total}</p>
                                             <p className="text-xs text-gray-500">Total</p>
                                         </div>
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className="text-2xl font-bold text-success">{analysis.images.withAlt}</p>
+                                            <p className="text-2xl font-bold text-success">{images.withAlt}</p>
                                             <p className="text-xs text-gray-500">With Alt</p>
                                         </div>
                                         <div className="glass rounded-xl p-4 text-center">
-                                            <p className={`text-2xl font-bold ${analysis.images.missingAlt > 0 ? "text-danger" : "text-success"}`}>{analysis.images.missingAlt}</p>
+                                            <p className={`text-2xl font-bold ${images.missingAlt > 0 ? "text-danger" : "text-success"}`}>{images.missingAlt}</p>
                                             <p className="text-xs text-gray-500">Missing Alt</p>
                                         </div>
                                     </div>
@@ -313,8 +365,8 @@ export default function Report() {
                                 </h3>
                                 <div className="space-y-2">
                                     {["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => {
-                                        const count = analysis.headings[tag as keyof typeof analysis.headings] as number;
-                                        const maxBar = Math.max(analysis.headings.h1, analysis.headings.h2, analysis.headings.h3, analysis.headings.h4, analysis.headings.h5, analysis.headings.h6, 1);
+                                        const count = headings[tag as keyof typeof headings] as number;
+                                        const maxBar = Math.max(headings.h1, headings.h2, headings.h3, headings.h4, headings.h5, headings.h6, 1);
                                         return (
                                             <div key={tag} className="flex items-center gap-3">
                                                 <span className="text-xs font-mono text-gray-400 w-6 uppercase">{tag}</span>
@@ -326,10 +378,10 @@ export default function Report() {
                                         );
                                     })}
                                 </div>
-                                {analysis.headings.h1Texts.length > 0 && (
+                                {headings.h1Texts && headings.h1Texts.length > 0 && (
                                     <div className="mt-4 p-3 rounded-xl bg-white/3 border border-white/5">
                                         <p className="text-xs text-gray-500 mb-1">H1 Text:</p>
-                                        {analysis.headings.h1Texts.map((text, i) => (
+                                        {headings.h1Texts.map((text, i) => (
                                             <p key={i} className="text-sm text-gray-300 truncate">
                                                 {text}
                                             </p>
@@ -344,9 +396,9 @@ export default function Report() {
                                     <Type size={20} className="text-warning" />
                                     Top Keywords
                                 </h3>
-                                {analysis.keywords.length > 0 ? (
+                                {keywords.length > 0 ? (
                                     <div className="space-y-2">
-                                        {analysis.keywords.map((kw, i) => (
+                                        {keywords.map((kw, i) => (
                                             <div key={kw.word} className="flex items-center gap-3">
                                                 <span className="text-xs text-gray-500 w-4">{i + 1}</span>
                                                 <span className="flex-1 text-sm font-medium">{kw.word}</span>
@@ -373,16 +425,16 @@ export default function Report() {
                             </h3>
                             <div className="space-y-4">
                                 {[
-                                    { label: "Title", value: analysis.metaData.title, ideal: "50-60 characters", len: analysis.metaData.title.length },
-                                    { label: "Description", value: analysis.metaData.description, ideal: "150-160 characters", len: analysis.metaData.description.length },
-                                    { label: "Canonical URL", value: analysis.metaData.canonical },
-                                    { label: "Robots", value: analysis.metaData.robots },
-                                    { label: "Viewport", value: analysis.metaData.viewport },
-                                    { label: "Charset", value: analysis.metaData.charset },
-                                    { label: "OG Title", value: analysis.metaData.ogTitle },
-                                    { label: "OG Description", value: analysis.metaData.ogDescription },
-                                    { label: "OG Image", value: analysis.metaData.ogImage },
-                                    { label: "Twitter Card", value: analysis.metaData.twitterCard },
+                                    { label: "Title", value: metaInfo.title, ideal: "50-60 characters", len: metaInfo.title.length },
+                                    { label: "Description", value: metaInfo.description, ideal: "150-160 characters", len: metaInfo.description.length },
+                                    { label: "Canonical URL", value: metaInfo.canonical },
+                                    { label: "Robots", value: metaInfo.robots },
+                                    { label: "Viewport", value: metaInfo.viewport },
+                                    { label: "Charset", value: metaInfo.charset },
+                                    { label: "OG Title", value: metaInfo.ogTitle },
+                                    { label: "OG Description", value: metaInfo.ogDescription },
+                                    { label: "OG Image", value: metaInfo.ogImage },
+                                    { label: "Twitter Card", value: metaInfo.twitterCard },
                                 ].map((meta) => (
                                     <div key={meta.label} className="bg-muted/50 border border-border rounded-xl p-4">
                                         <div className="flex items-center justify-between mb-1">
@@ -419,15 +471,15 @@ export default function Report() {
                                     </div>
                                     <div className="flex justify-between items-center p-3 bg-muted/50 border border-border rounded-xl">
                                         <span className="text-sm text-muted-foreground">Total Links</span>
-                                        <span className="font-bold text-foreground">{analysis.links.total}</span>
+                                        <span className="font-bold text-foreground">{links.total}</span>
                                     </div>
                                     <div className="flex justify-between items-center p-3 bg-muted/50 border border-border rounded-xl">
                                         <span className="text-sm text-muted-foreground">Total Images</span>
-                                        <span className="font-bold text-foreground">{analysis.images.total}</span>
+                                        <span className="font-bold text-foreground">{images.total}</span>
                                     </div>
                                     <div className="flex justify-between items-center p-3 bg-muted/50 border border-border rounded-xl">
                                         <span className="text-sm text-muted-foreground">Total Headings</span>
-                                        <span className="font-bold text-foreground">{analysis.headings.h1 + analysis.headings.h2 + analysis.headings.h3 + analysis.headings.h4 + analysis.headings.h5 + analysis.headings.h6}</span>
+                                        <span className="font-bold text-foreground">{headings.h1 + headings.h2 + headings.h3 + headings.h4 + headings.h5 + headings.h6}</span>
                                     </div>
                                 </div>
                             </div>
@@ -436,7 +488,7 @@ export default function Report() {
                                 <h3 className="text-lg font-semibold text-foreground mb-4">Heading Hierarchy</h3>
                                 <div className="space-y-2">
                                     {["h1", "h2", "h3", "h4", "h5", "h6"].map((tag, i) => {
-                                        const count = analysis.headings[tag as keyof typeof analysis.headings] as number;
+                                        const count = headings[tag as keyof typeof headings] as number;
                                         return (
                                             <div key={tag} className="flex items-center gap-3 p-2.5 bg-muted/30 border border-border rounded-lg" style={{ paddingLeft: `${i * 12 + 12}px` }}>
                                                 <span className="text-xs font-mono font-bold text-primary uppercase">&lt;{tag}&gt;</span>
@@ -454,7 +506,7 @@ export default function Report() {
 
                     {activeTab === "issues" && (
                         <div>
-                            {analysis.issues.length > 0 ? (
+                            {issues.length > 0 ? (
                                 <>
                                     {/* Issue filters */}
                                     <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -464,7 +516,7 @@ export default function Report() {
                                         <span className="severity-info px-2.5 py-1 rounded-full text-xs font-semibold">{infoCount} Info</span>
                                     </div>
                                     <div className="space-y-3">
-                                        {analysis.issues.map((issue, i) => (
+                                        {issues.map((issue, i) => (
                                             <IssueCard key={i} issue={issue} />
                                         ))}
                                     </div>

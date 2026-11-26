@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Target, Globe, Clock, TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, ExternalLink, Trophy, Users, Calendar, Loader2 } from "lucide-react";
-import { dummyWebsiteRanking } from "../assets/assets";
+import { useApp } from "../context/AppContext";
 
 interface RankHistoryEntry {
     date: string;
@@ -39,6 +39,7 @@ interface TrackingData {
 
 export default function RankDetail() {
     const { id } = useParams();
+    const { api } = useApp();
     const [tracking, setTracking] = useState<TrackingData | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -46,19 +47,47 @@ export default function RankDetail() {
     const chartRef = useRef<HTMLCanvasElement>(null);
 
     const fetchTracking = async () => {
-        setTimeout(() => {
-            setTracking(dummyWebsiteRanking);
+        try {
+            const res = await api.get(`/api/rank/${id}`);
+            if (res.data.success) {
+                setTracking(res.data.tracking);
+                if (res.data.tracking.status === "checking") {
+                    setTimeout(fetchTracking, 3000);
+                } else {
+                    setLoading(false);
+                }
+            }
+        } catch (error) {
+            console.error("Failed to fetch tracking details:", error);
             setLoading(false);
-        }, 1000);
+        }
     };
 
     const handleRefresh = async () => {
         if (!tracking) return;
         setRefreshing(true);
-        setTimeout(() => {
-            setTracking(dummyWebsiteRanking);
+        try {
+            await api.post(`/api/rank/${tracking._id}/refresh`);
+            setTracking((prev) => (prev ? { ...prev, status: "checking" } : prev));
+
+            const pollInterval = setInterval(async () => {
+                try {
+                    const check = await api.get(`/api/rank/${tracking._id}`);
+                    if (check.data.tracking.status !== "checking") {
+                        clearInterval(pollInterval);
+                        setTracking(check.data.tracking);
+                        setRefreshing(false);
+                    }
+                } catch (error) {
+                    console.error("Polling error:", error);
+                    clearInterval(pollInterval);
+                    setRefreshing(false);
+                }
+            }, 3000);
+        } catch (error) {
+            console.error("Refresh error:", error);
             setRefreshing(false);
-        }, 1000);
+        }
     };
 
     const drawChart = () => {
@@ -68,7 +97,9 @@ export default function RankDetail() {
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        const history = tracking.rankHistory.filter((h) => h.position !== null).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const history = tracking.rankHistory
+            .filter((h) => h.position !== null)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
         if (history.length === 0) return;
 
@@ -150,7 +181,6 @@ export default function RankDetail() {
 
         // Draw gradient fill
         const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
-        // Using accent rgb roughly (59, 130, 246)
         gradient.addColorStop(0, "rgba(59, 130, 246, 0.15)");
         gradient.addColorStop(1, "rgba(59, 130, 246, 0)");
 
@@ -210,7 +240,9 @@ export default function RankDetail() {
     };
 
     useEffect(() => {
-        (async () => await fetchTracking())();
+        if (id) {
+            fetchTracking();
+        }
     }, [id]);
 
     useEffect(() => {

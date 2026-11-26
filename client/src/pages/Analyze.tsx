@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { SearchIcon, GlobeIcon, FileSearchIcon, BrainIcon, CheckCircleIcon, AlertCircle, Loader2, ArrowRightIcon } from "lucide-react";
+import { useApp } from "../context/AppContext";
 
 const STEPS = [
     { icon: <GlobeIcon size={22} />, label: "Connecting to browser", desc: "Creating cloud browser session..." },
@@ -19,26 +20,74 @@ export default function Analyze() {
     const [searchParams] = useSearchParams();
     const pollRef = useRef<any>(null);
 
+    const { api } = useApp();
     const navigate = useNavigate();
 
     const handleAnalyze = async (submitUrl?: string) => {
-        const targetUrl = submitUrl || url;
-        if (!targetUrl.trim()) return;
+        const targetUrl = (submitUrl || url).trim();
+        if (!targetUrl) return;
 
+        const formattedUrl = /^https?:\/\//i.test(targetUrl) ? targetUrl : `https://${targetUrl}`;
+        setUrl(formattedUrl);
         setError("");
         setAnalyzing(true);
         setCurrentStep(0);
 
-        setTimeout(() => setCurrentStep(1), 1000);
-        setTimeout(() => setCurrentStep(2), 3000);
-        setTimeout(() => setCurrentStep(3), 6000);
-        setTimeout(() => {
+        if (pollRef.current) {
+            clearInterval(pollRef.current);
+        }
+
+        try {
+            const res = await api.post("/api/analysis/analyze", { url: formattedUrl });
+
+            if (!res.data.success || !res.data.analysisId) {
+                setError(res.data.message || "Failed to start analysis");
+                setAnalyzing(false);
+                return;
+            }
+
+            const analysisId = res.data.analysisId;
+            setCurrentStep(1);
+
+            let ticks = 0;
+            pollRef.current = setInterval(async () => {
+                ticks++;
+                if (ticks === 3) {
+                    setCurrentStep(2);
+                }
+
+                try {
+                    const statusRes = await api.get(`/api/analysis/${analysisId}`);
+                    const status = statusRes.data?.analysis?.status;
+
+                    if (status === "completed") {
+                        clearInterval(pollRef.current);
+                        pollRef.current = null;
+                        setCurrentStep(3);
+                        setTimeout(() => {
+                            setAnalyzing(false);
+                            navigate(`/report/${analysisId}`);
+                        }, 600);
+                    } else if (status === "failed") {
+                        clearInterval(pollRef.current);
+                        pollRef.current = null;
+                        setAnalyzing(false);
+                        setError("Website analysis failed. Please check the URL and try again.");
+                    }
+                } catch (pollError: any) {
+                    clearInterval(pollRef.current);
+                    pollRef.current = null;
+                    setAnalyzing(false);
+                    setError(pollError.response?.data?.message || "Error checking analysis status.");
+                }
+            }, 2000);
+        } catch (err: any) {
             setAnalyzing(false);
-            navigate(`/report/id123`);
-        }, 8000);
+            setError(err.response?.data?.message || "Failed to start website analysis.");
+        }
     };
 
-    const handleSubmit = (e: React.SubmitEvent) => {
+    const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         handleAnalyze();
     };
@@ -46,8 +95,7 @@ export default function Analyze() {
     useEffect(() => {
         const prefillUrl = searchParams.get("url");
         if (prefillUrl) {
-            (() => setUrl(prefillUrl))();
-            // Auto-start if URL is provided
+            setUrl(prefillUrl);
             setTimeout(() => handleAnalyze(prefillUrl), 500);
         }
 
